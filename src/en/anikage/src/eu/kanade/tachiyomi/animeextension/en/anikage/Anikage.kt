@@ -107,6 +107,7 @@ class Anikage :
         val data = buildJsonObject {
             putJsonObject("variables") {
                 if (query != "") put("search", query)
+                if (searchParams.season != "ALL") put("season", searchParams.season)
                 if (searchParams.origin != "ALL") put("countryOfOrigin", searchParams.origin)
                 if (searchParams.types != "ALL") put("format_in", searchParams.types)
                 if (searchParams.releaseYear != "ALL") put("seasonYear", searchParams.releaseYear.toInt())
