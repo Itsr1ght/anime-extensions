@@ -100,8 +100,7 @@ data class EpisodeResult(
 data class EpisodeSource(
     val sources: List<SourceData>,
     val subtitles: List<SubtitleData> = emptyList(),
-    val thumbnails: List<String> = emptyList(),
-
+    val headers: Headers,
 )
 
 @Serializable
@@ -118,4 +117,11 @@ data class SubtitleData(
     val label: String,
     val kind: String,
     val default: Boolean,
+)
+
+@Serializable
+data class Headers(
+    @SerialName("Referer") val referer: String?,
+    @SerialName("Origin") val origin: String?,
+    @SerialName("User-Agent") val userAgent: String?,
 )

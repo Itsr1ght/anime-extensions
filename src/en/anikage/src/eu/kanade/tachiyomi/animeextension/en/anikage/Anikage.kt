@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.animeextension.en.anikage
 
 import android.content.SharedPreferences
 import android.util.Base64
+import android.util.Log
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
@@ -21,8 +22,7 @@ import eu.kanade.tachiyomi.network.await
 import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import keiyoushi.utils.toRequestBody
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
@@ -30,55 +30,20 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONObject
-import uy.kohesive.injekt.injectLazy
-import kotlin.getValue
 
 class Anikage :
     AnimeHttpSource(),
     ConfigurableAnimeSource {
 
-    override val baseUrl: String = "https://anikage.cc/"
+    override val baseUrl: String = "https://anikage.cc"
     override val lang: String = "en"
     override val supportsLatest: Boolean = true
     override val name: String = "Anikage"
 
-    companion object {
-
-        private const val PREF_SITE_DOMAIN_KEY = "preferred_site_domain"
-        private const val PREF_SITE_DOMAIN_DEFAULT = "https://anikage.cc"
-
-        private const val PREF_DOMAIN_KEY = "preferred_domain"
-        private const val PREF_DOMAIN_DEFAULT = "https://graphql.anilist.co/"
-        private const val PREF_ADULT_KEY = "nsfw"
-        private const val PREF_ADULT_DEFAULT = false
-
-        private const val PREF_API_KEY = "private_api_key"
-        private const val PREF_API_DEFAULT = "x9f2k7m4q1w8e3r6t5y0"
-
-        private val SUB_PROVIDER = arrayOf("uwu", "mochi", "mimi", "kami", "vee", "shiro", "wave", "zaza")
-        private val DUB_PROVIDER = arrayOf("uwu", "mochi", "kami")
-
-        private const val PREF_SUB_SOURCE = "preferred_sub_source"
-        private const val PREF_SUB_DEFAULT = "mochi"
-
-        private const val PREF_DUB_SOURCE = "preferred_dub_source"
-        private const val PREF_DUB_DEFAULT = "mochi"
-
-        private const val PREF_ISSUBORDUB_SOURCE = "is_sub_or_dub"
-        private const val PREF_ISSUBORDUB_DEFAULT = "sub"
-        private const val PREF_SITE_TITLE_FORMAT = "title_format"
-        private const val PREF_SITE_TITLE_DEFAULT = "english"
-    }
-
-    private val json: Json by injectLazy()
     private val preferences by getPreferencesLazy()
-
-    private val apiUrl by lazy { preferences.apiUrl }
 
     override fun getFilterList(): AnimeFilterList = AnikageFilters.FILTER_LIST
 
@@ -184,8 +149,8 @@ class Anikage :
         val id = anime.url.split("/").last()
         val token = makeToken(id.toInt())
         val getHeaders = headersBuilder()
-            .add("Referer", anime.url)
-            .add("Origin", preferences.siteUrl)
+            .add("Referer", "$baseUrl${anime.url}")
+            .add("Origin", baseUrl)
             .add("Accept", "*/*")
             .add("Sec-Fetch-Site", "same-origin")
             .add("Sec-Fetch-Mode", "cors")
@@ -217,7 +182,7 @@ class Anikage :
                 date_upload = 0L
                 url = animeEpisodeUrlFormat(
                     animeId.toInt(),
-                    provider ?: "mochi",
+                    provider,
                     it.number,
                     preferences.subOrDub ?: "sub",
                 )
@@ -240,12 +205,12 @@ class Anikage :
         val token = makeSourcesToken(
             animeId.toInt(),
             episode.episode_number.toInt(),
-            provider ?: "mochi",
+            provider,
         )
 
         val getHeaders = headersBuilder()
             .add("Referer", episode.url)
-            .add("Origin", preferences.siteUrl)
+            .add("Origin", baseUrl)
             .add("Accept", "*/*")
             .add("Sec-Fetch-Site", "same-origin")
             .add("Sec-Fetch-Mode", "cors")
@@ -257,22 +222,19 @@ class Anikage :
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
         val response = client.newCall(videoListRequest(episode)).await()
-        val jsonResponse = response.parseAs<EpisodeSource>()
+        val episodeData = response.parseAs<EpisodeSource>()
 
-        val getHeaders = headersBuilder()
-            .add("Referer", episode.url)
-            .add("Origin", preferences.siteUrl)
-            .add("Accept", "*/*")
-            .add("Sec-Fetch-Site", "same-origin")
-            .add("Sec-Fetch-Mode", "cors")
-            .add("Sec-Fetch-Dest", "empty")
-            .build()
+        val getHeaders = headers.newBuilder().apply {
+            episodeData.headers.referer?.let { set("Referer", it) }
+            episodeData.headers.origin?.let { set("Origin", it) }
+            episodeData.headers.userAgent?.let { set("User-Agent", it) }
+        }.build()
 
-        val tracks = jsonResponse.subtitles.map {
+        val tracks = episodeData.subtitles.map {
             Track(it.url, it.lang)
         }
 
-        val videos = jsonResponse.sources.map {
+        val videos = episodeData.sources.map {
             Video(
                 url = it.url,
                 quality = it.quality,
@@ -286,11 +248,11 @@ class Anikage :
 
     // Utils
 
-    fun Int.animeUrlBuilder(): String = "anime/info/$this"
-    fun String.animeEpisodeBuilder(): String = "${preferences.siteUrl}/api/anime/episodes/$this"
-    fun String.episodeUrlBuilder(): String = "${preferences.siteUrl}/api/anime/sources/$this"
+    fun Int.animeUrlBuilder(): String = "/anime/info/$this"
+    fun String.animeEpisodeBuilder(): String = "$baseUrl/api/anime/episodes/$this"
+    fun String.episodeUrlBuilder(): String = "$baseUrl/api/anime/sources/$this"
 
-    fun animeEpisodeUrlFormat(id: Int, host: String, episodeId: Int, type: String): String = "${preferences.siteUrl}/anime/watch/$id?host=$host&ep=$episodeId&type=$type"
+    fun animeEpisodeUrlFormat(id: Int, host: String, episodeId: Int, type: String): String = "$baseUrl/anime/watch/$id?host=$host&ep=$episodeId&type=$type"
 
     fun parseAnime(response: Response): AnimesPage {
         val jsonData = response.parseAs<GraphQLResult>()
@@ -310,7 +272,7 @@ class Anikage :
             }
 
             SAnime.create().apply {
-                url = id.animeUrlBuilder()
+                setUrlWithoutDomain(id.animeUrlBuilder())
                 thumbnail_url = it.coverImage.extraLarge
                 title = titleName
                 description = it.description
@@ -327,6 +289,76 @@ class Anikage :
         return AnimesPage(animes, hasNextPage)
     }
 
+    fun makeSourcesToken(
+        animeId: Int,
+        ep: Int,
+        provider: String,
+        type: String = preferences.subOrDub ?: "sub",
+    ): String {
+        val payload = JSONObject().apply {
+            put("id", animeId)
+            put("epNum", ep)
+            put("host", provider)
+            put("type", type)
+            put("_t", (System.currentTimeMillis() / 1000).toString())
+        }.toString()
+
+        Log.e("Anikage", "Payload: $payload")
+
+        val raw = payload.toByteArray(Charsets.UTF_8)
+        val key = preferences.apiKey.toByteArray()
+
+        val out = ByteArray(raw.size)
+        for (i in raw.indices) {
+            out[i] = (raw[i].toInt() xor key[i % key.size].toInt()).toByte()
+        }
+
+        return Base64.encodeToString(out, Base64.NO_WRAP)
+            .replace("+", "-")
+            .replace("/", "_")
+            .replace("=", "")
+    }
+
+    fun makeToken(animeId: Int, refresh: Boolean = false): String {
+        val payload = JSONObject().apply {
+            put("id", animeId)
+            put("refresh", refresh.toString().lowercase())
+            put("_t", (System.currentTimeMillis() / 1000).toString())
+        }.toString()
+
+        Log.e("Anikage", "Payload: $payload")
+
+        val raw = payload.toByteArray(Charsets.UTF_8)
+
+        val out = ByteArray(raw.size)
+
+        val key = preferences.apiKey.toByteArray()
+
+        for (i in raw.indices) {
+            out[i] = (raw[i].toInt() xor key[i % key.size].toInt()).toByte()
+        }
+
+        return Base64.encodeToString(out, Base64.NO_WRAP)
+            .replace("+", "-")
+            .replace("/", "_")
+            .replace("=", "")
+    }
+
+    private fun buildPost(dataObject: JsonObject): Request {
+        val payload = dataObject.toRequestBody()
+
+        val postHeaders = headers.newBuilder().apply {
+            add("Accept", "*/*")
+            add("Content-Length", payload.contentLength().toString())
+            add("Content-Type", payload.contentType().toString())
+            add("Host", ANILIST_API.toHttpUrl().host)
+            add("Origin", baseUrl)
+            add("Referer", "$ANILIST_API/")
+        }.build()
+
+        return POST(ANILIST_API, headers = postHeaders, body = payload)
+    }
+
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         ListPreference(screen.context).apply {
             key = PREF_SITE_TITLE_FORMAT
@@ -334,24 +366,6 @@ class Anikage :
             entries = arrayOf("english", "romaji")
             entryValues = arrayOf("english", "romaji")
             setDefaultValue(PREF_SITE_TITLE_DEFAULT)
-            summary = "%s"
-        }.also(screen::addPreference)
-
-        ListPreference(screen.context).apply {
-            key = PREF_SITE_DOMAIN_KEY
-            title = "Preferred domain for site (requires app restart)"
-            entries = arrayOf(preferences.siteUrl)
-            entryValues = arrayOf(preferences.siteUrl)
-            setDefaultValue(PREF_SITE_DOMAIN_DEFAULT)
-            summary = "%s"
-        }.also(screen::addPreference)
-
-        ListPreference(screen.context).apply {
-            key = PREF_DOMAIN_KEY
-            title = "Preferred domain (requires app restart)"
-            entries = arrayOf(preferences.apiUrl)
-            entryValues = arrayOf(preferences.apiUrl)
-            setDefaultValue(PREF_DOMAIN_DEFAULT)
             summary = "%s"
         }.also(screen::addPreference)
 
@@ -363,9 +377,9 @@ class Anikage :
 
         EditTextPreference(screen.context).apply {
             key = PREF_API_KEY
-            title = "API key (requires app restart)"
+            title = "API key"
             setDefaultValue(PREF_API_DEFAULT)
-            summary = "%s"
+            summary = "Private API key"
         }.also(screen::addPreference)
 
         ListPreference(screen.context).apply {
@@ -396,82 +410,8 @@ class Anikage :
         }.also(screen::addPreference)
     }
 
-    fun makeSourcesToken(
-        animeId: Int,
-        ep: Int,
-        provider: String,
-        type: String = preferences.subOrDub ?: "sub",
-    ): String {
-        val payload = JSONObject().apply {
-            put("id", animeId)
-            put("epNum", ep)
-            put("host", provider)
-            put("type", type)
-            put("_t", (System.currentTimeMillis() / 1000).toString())
-        }.toString()
-
-        val raw = payload.toByteArray(Charsets.UTF_8)
-        val key = preferences.apiKey.toByteArray()
-
-        val out = ByteArray(raw.size)
-        for (i in raw.indices) {
-            out[i] = (raw[i].toInt() xor key[i % key.size].toInt()).toByte()
-        }
-
-        return Base64.encodeToString(out, Base64.NO_WRAP)
-            .replace("+", "-")
-            .replace("/", "_")
-            .replace("=", "")
-    }
-
-    fun makeToken(animeId: Int, refresh: Boolean = false): String {
-        val payload = JSONObject().apply {
-            put("id", animeId)
-            put("refresh", refresh.toString().lowercase())
-            put("_t", (System.currentTimeMillis() / 1000).toString())
-        }.toString()
-
-        val raw = payload.toByteArray(Charsets.UTF_8)
-
-        val out = ByteArray(raw.size)
-
-        val key = preferences.apiKey.toByteArray()
-
-        for (i in raw.indices) {
-            out[i] = (raw[i].toInt() xor key[i % key.size].toInt()).toByte()
-        }
-
-        return Base64.encodeToString(out, Base64.NO_WRAP)
-            .replace("+", "-")
-            .replace("/", "_")
-            .replace("=", "")
-    }
-
-    private fun buildPost(dataObject: JsonObject): Request {
-        val payload = json.encodeToString(dataObject)
-            .toRequestBody("application/json; charset=utf-8".toMediaType())
-
-        val siteUrl = preferences.siteUrl
-        val postHeaders = headers.newBuilder().apply {
-            add("Accept", "*/*")
-            add("Content-Length", payload.contentLength().toString())
-            add("Content-Type", payload.contentType().toString())
-            add("Host", apiUrl.toHttpUrl().host)
-            add("Origin", siteUrl)
-            add("Referer", "$apiUrl/")
-        }.build()
-
-        return POST(apiUrl, headers = postHeaders, body = payload)
-    }
-
     private val SharedPreferences.titleStyle
         get() = getString(PREF_SITE_TITLE_FORMAT, PREF_SITE_TITLE_DEFAULT)
-
-    private val SharedPreferences.siteUrl
-        get() = getString(PREF_SITE_DOMAIN_KEY, PREF_SITE_DOMAIN_DEFAULT)!!
-
-    private val SharedPreferences.apiUrl
-        get() = getString(PREF_DOMAIN_KEY, PREF_DOMAIN_DEFAULT)!!
 
     private val SharedPreferences.isAdult
         get() = getBoolean(PREF_ADULT_KEY, PREF_ADULT_DEFAULT)
@@ -483,8 +423,45 @@ class Anikage :
         get() = getString(PREF_ISSUBORDUB_SOURCE, PREF_ISSUBORDUB_DEFAULT)
 
     private val SharedPreferences.subSource
-        get() = getString(PREF_SUB_SOURCE, PREF_SUB_DEFAULT)
+        get() = getString(PREF_SUB_SOURCE, PREF_SUB_DEFAULT)!!
 
     private val SharedPreferences.dubSource
-        get() = getString(PREF_DUB_SOURCE, PREF_DUB_DEFAULT)
+        get() = getString(PREF_DUB_SOURCE, PREF_DUB_DEFAULT)!!
+
+    companion object {
+
+        private const val ANILIST_API = "https://graphql.anilist.co"
+        private const val PREF_ADULT_KEY = "nsfw"
+        private const val PREF_ADULT_DEFAULT = false
+
+        private const val PREF_API_KEY = "private_api_key"
+        private const val PREF_API_DEFAULT = "x9f2k7m4q1w8e3r6t5y0"
+
+        private val SUB_PROVIDER = arrayOf(
+            "uwu",
+            "mochi",
+            "mimi",
+            "kami",
+            "vee",
+            "shiro",
+            "wave",
+            "zaza",
+        )
+        private val DUB_PROVIDER = arrayOf(
+            "uwu",
+            "mochi",
+            "kami",
+        )
+
+        private const val PREF_SUB_SOURCE = "preferred_sub_source"
+        private val PREF_SUB_DEFAULT = SUB_PROVIDER.first()
+
+        private const val PREF_DUB_SOURCE = "preferred_dub_source"
+        private val PREF_DUB_DEFAULT = DUB_PROVIDER.first()
+
+        private const val PREF_ISSUBORDUB_SOURCE = "is_sub_or_dub"
+        private const val PREF_ISSUBORDUB_DEFAULT = "sub"
+        private const val PREF_SITE_TITLE_FORMAT = "title_format"
+        private const val PREF_SITE_TITLE_DEFAULT = "english"
+    }
 }
