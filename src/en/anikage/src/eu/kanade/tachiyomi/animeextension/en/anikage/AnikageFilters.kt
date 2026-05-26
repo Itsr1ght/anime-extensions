@@ -77,7 +77,6 @@ object AnikageFilters {
     }
 
     private object AnikageFiltersData {
-        val ALL = Pair("All", "ALL")
         val ORIGIN = arrayOf(
             Pair("ALL", "ALL"),
             Pair("Japan", "JP"),

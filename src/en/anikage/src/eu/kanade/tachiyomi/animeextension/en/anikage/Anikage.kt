@@ -2,11 +2,7 @@ package eu.kanade.tachiyomi.animeextension.en.anikage
 
 import android.content.SharedPreferences
 import android.util.Base64
-import android.util.Log
-import androidx.preference.EditTextPreference
-import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
-import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimeUpdateStrategy
@@ -18,11 +14,14 @@ import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
-import eu.kanade.tachiyomi.network.await
-import eu.kanade.tachiyomi.util.asJsoup
+import eu.kanade.tachiyomi.network.awaitSuccess
+import keiyoushi.utils.addEditTextPreference
+import keiyoushi.utils.addListPreference
+import keiyoushi.utils.addSwitchPreference
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.toRequestBody
+import keiyoushi.utils.useAsJsoup
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
@@ -39,8 +38,11 @@ class Anikage :
     ConfigurableAnimeSource {
 
     override val baseUrl: String = "https://anikage.cc"
+
     override val lang: String = "en"
+
     override val supportsLatest: Boolean = true
+
     override val name: String = "Anikage"
 
     private val preferences by getPreferencesLazy()
@@ -110,27 +112,27 @@ class Anikage :
     override fun latestUpdatesParse(response: Response) = parseAnime(response)
 
     override fun animeDetailsParse(response: Response): SAnime {
-        val soup = response.asJsoup()
+        val soup = response.useAsJsoup()
         val studioTag = soup.selectFirst("div.flex.uppercase")
         val studioNameDiv = studioTag?.nextElementSibling()
 
-        val englishName = soup.selectFirst("h1.text-center.tracking-tighter")?.text()
-        val romajiName = soup.selectFirst("h2.text-center.line-clamp-2")?.text()
+        val englishName = soup.selectFirst("h1.text-center.tracking-tighter")?.text()?.takeIf(String::isNotBlank)
+        val romajiName = soup.selectFirst("h2.text-center.line-clamp-2")?.text()?.takeIf(String::isNotBlank)
 
         val titleName = if (preferences.titleStyle == "english") {
-            englishName
+            englishName ?: romajiName
         } else {
-            romajiName
+            romajiName ?: englishName
         }
 
         val authorName = studioNameDiv
             ?.select("span.cursor-default")
-            ?.eachText()?.joinToString(", ").orEmpty()
+            ?.eachText()?.joinToString()
 
         val statusName = soup.selectFirst("span.uppercase.font-semibold")?.text()
 
         return SAnime.create().apply {
-            title = titleName ?: ""
+            titleName?.let { title = it }
             author = authorName
             update_strategy = if (statusName == "Finished") {
                 AnimeUpdateStrategy.ONLY_FETCH_ONCE
@@ -145,9 +147,11 @@ class Anikage :
         }
     }
 
-    override fun episodeListRequest(anime: SAnime): Request {
-        val id = anime.url.split("/").last()
-        val token = makeToken(id.toInt())
+    override fun episodeListParse(response: Response) = throw UnsupportedOperationException()
+
+    override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
+        val animeId = anime.url.split("/").last().toIntOrNull() ?: throw IllegalArgumentException("Invalid anime URL: ${anime.url}")
+        val token = makeToken(animeId)
         val getHeaders = headersBuilder()
             .add("Referer", "$baseUrl${anime.url}")
             .add("Origin", baseUrl)
@@ -157,12 +161,11 @@ class Anikage :
             .add("Sec-Fetch-Dest", "empty")
             .build()
 
-        return GET(token.animeEpisodeBuilder(), headers = getHeaders)
-    }
+        val episodeListRequest = GET(token.animeEpisodeBuilder(), headers = getHeaders)
 
-    override fun episodeListParse(response: Response): List<SEpisode> {
-        val referer = response.request.header("Referer").orEmpty()
-        val animeId = referer.substringAfterLast("/")
+        val episodesData = client.newCall(episodeListRequest)
+            .awaitSuccess()
+            .parseAs<List<EpisodeResult>>()
 
         val provider = if (preferences.subOrDub == "dub") {
             preferences.dubSource
@@ -170,8 +173,7 @@ class Anikage :
             preferences.subSource
         }
 
-        val jsonResponse = response.parseAs<List<EpisodeResult>>()
-        val episode = jsonResponse.reversed().map {
+        val episode = episodesData.reversed().map {
             SEpisode.create().apply {
                 episode_number = it.number.toFloat()
                 name = if (!it.title.isNullOrBlank()) {
@@ -181,10 +183,10 @@ class Anikage :
                 }
                 date_upload = 0L
                 url = animeEpisodeUrlFormat(
-                    animeId.toInt(),
+                    animeId,
                     provider,
                     it.number,
-                    preferences.subOrDub ?: "sub",
+                    preferences.subOrDub,
                 )
             }
         }
@@ -203,7 +205,7 @@ class Anikage :
         }
 
         val token = makeSourcesToken(
-            animeId.toInt(),
+            animeId.toIntOrNull()!!,
             episode.episode_number.toInt(),
             provider,
         )
@@ -221,8 +223,9 @@ class Anikage :
     }
 
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
-        val response = client.newCall(videoListRequest(episode)).await()
-        val episodeData = response.parseAs<EpisodeSource>()
+        val episodeData = client.newCall(videoListRequest(episode))
+            .awaitSuccess()
+            .parseAs<EpisodeSource>()
 
         val getHeaders = headers.newBuilder().apply {
             episodeData.headers.referer?.let { set("Referer", it) }
@@ -248,13 +251,13 @@ class Anikage :
 
     // Utils
 
-    fun Int.animeUrlBuilder(): String = "/anime/info/$this"
-    fun String.animeEpisodeBuilder(): String = "$baseUrl/api/anime/episodes/$this"
-    fun String.episodeUrlBuilder(): String = "$baseUrl/api/anime/sources/$this"
+    private fun Int.animeUrlBuilder(): String = "/anime/info/$this"
+    private fun String.animeEpisodeBuilder(): String = "$baseUrl/api/anime/episodes/$this"
+    private fun String.episodeUrlBuilder(): String = "$baseUrl/api/anime/sources/$this"
 
-    fun animeEpisodeUrlFormat(id: Int, host: String, episodeId: Int, type: String): String = "$baseUrl/anime/watch/$id?host=$host&ep=$episodeId&type=$type"
+    private fun animeEpisodeUrlFormat(id: Int, host: String, episodeId: Int, type: String): String = "$baseUrl/anime/watch/$id?host=$host&ep=$episodeId&type=$type"
 
-    fun parseAnime(response: Response): AnimesPage {
+    private fun parseAnime(response: Response): AnimesPage {
         val jsonData = response.parseAs<GraphQLResult>()
 
         val media = jsonData.data.page.media
@@ -264,7 +267,7 @@ class Anikage :
 
         val animes = media.map {
             val id = it.id
-            val titleFormat = preferences.titleStyle ?: "romaji"
+            val titleFormat = preferences.titleStyle
             val titleName = if (titleFormat == "english") {
                 it.title.english ?: it.title.romaji
             } else {
@@ -282,18 +285,18 @@ class Anikage :
                     else -> SAnime.UNKNOWN
                 }
                 update_strategy = AnimeUpdateStrategy.ALWAYS_UPDATE
-                genre = it.genres.joinToString(", ")
+                genre = it.genres.joinToString()
             }
         }
 
         return AnimesPage(animes, hasNextPage)
     }
 
-    fun makeSourcesToken(
+    private fun makeSourcesToken(
         animeId: Int,
         ep: Int,
         provider: String,
-        type: String = preferences.subOrDub ?: "sub",
+        type: String = preferences.subOrDub,
     ): String {
         val payload = JSONObject().apply {
             put("id", animeId)
@@ -302,8 +305,6 @@ class Anikage :
             put("type", type)
             put("_t", (System.currentTimeMillis() / 1000).toString())
         }.toString()
-
-        Log.e("Anikage", "Payload: $payload")
 
         val raw = payload.toByteArray(Charsets.UTF_8)
         val key = preferences.apiKey.toByteArray()
@@ -319,14 +320,12 @@ class Anikage :
             .replace("=", "")
     }
 
-    fun makeToken(animeId: Int, refresh: Boolean = false): String {
+    private fun makeToken(animeId: Int, refresh: Boolean = false): String {
         val payload = JSONObject().apply {
             put("id", animeId)
             put("refresh", refresh.toString().lowercase())
             put("_t", (System.currentTimeMillis() / 1000).toString())
         }.toString()
-
-        Log.e("Anikage", "Payload: $payload")
 
         val raw = payload.toByteArray(Charsets.UTF_8)
 
@@ -360,58 +359,59 @@ class Anikage :
     }
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        ListPreference(screen.context).apply {
-            key = PREF_SITE_TITLE_FORMAT
-            title = "Preferred Title Style"
-            entries = arrayOf("english", "romaji")
-            entryValues = arrayOf("english", "romaji")
-            setDefaultValue(PREF_SITE_TITLE_DEFAULT)
-            summary = "%s"
-        }.also(screen::addPreference)
+        screen.addListPreference(
+            key = PREF_SITE_TITLE_FORMAT,
+            title = "Preferred Title Style",
+            entries = listOf("english", "romaji"),
+            entryValues = listOf("english", "romaji"),
+            default = PREF_SITE_TITLE_DEFAULT,
+            summary = "%s",
+        )
 
-        SwitchPreferenceCompat(screen.context).apply {
-            key = PREF_ADULT_KEY
-            title = "Enable NSFW Content"
-            setDefaultValue(PREF_ADULT_DEFAULT)
-        }.also(screen::addPreference)
+        screen.addSwitchPreference(
+            key = PREF_ADULT_KEY,
+            title = "Enable NSFW Content",
+            summary = "Show adult content in search results and popular anime",
+            default = PREF_ADULT_DEFAULT,
+        )
 
-        EditTextPreference(screen.context).apply {
-            key = PREF_API_KEY
-            title = "API key"
-            setDefaultValue(PREF_API_DEFAULT)
-            summary = "Private API key"
-        }.also(screen::addPreference)
+        screen.addEditTextPreference(
+            key = PREF_API_KEY,
+            title = "API key",
+            default = PREF_API_DEFAULT,
+            summary = "Private API key",
+        )
 
-        ListPreference(screen.context).apply {
-            key = PREF_ISSUBORDUB_SOURCE
-            title = "Sub or Dub?"
-            entries = arrayOf("sub", "dub")
-            entryValues = arrayOf("sub", "dub")
-            setDefaultValue(PREF_ISSUBORDUB_DEFAULT)
-            summary = "%s"
-        }.also(screen::addPreference)
+        screen.addListPreference(
+            key = PREF_ISSUBORDUB_SOURCE,
+            title = "Sub or Dub?",
+            entries = listOf("sub", "dub"),
+            entryValues = listOf("sub", "dub"),
+            default = PREF_ISSUBORDUB_DEFAULT,
+            summary = "%s",
+        )
 
-        ListPreference(screen.context).apply {
-            key = PREF_SUB_SOURCE
-            title = "Preferred Sub Server"
-            entries = SUB_PROVIDER
-            entryValues = SUB_PROVIDER
-            setDefaultValue(PREF_SUB_DEFAULT)
-            summary = "%s"
-        }.also(screen::addPreference)
+        screen.addListPreference(
+            key = PREF_SUB_SOURCE,
+            title = "Preferred Sub Server",
+            entries = SUB_PROVIDER,
+            entryValues = SUB_PROVIDER,
+            default = PREF_SUB_DEFAULT,
+            summary = "%s",
+        )
 
-        ListPreference(screen.context).apply {
-            key = PREF_DUB_SOURCE
-            title = "Preferred Dub Server"
-            entries = DUB_PROVIDER
-            entryValues = DUB_PROVIDER
-            setDefaultValue(PREF_DUB_DEFAULT)
-            summary = "%s"
-        }.also(screen::addPreference)
+        screen.addListPreference(
+            key = PREF_DUB_SOURCE,
+            title = "Preferred Dub Server",
+            entries = DUB_PROVIDER,
+            entryValues = DUB_PROVIDER,
+            default = PREF_DUB_DEFAULT,
+            summary = "%s",
+        )
     }
 
     private val SharedPreferences.titleStyle
-        get() = getString(PREF_SITE_TITLE_FORMAT, PREF_SITE_TITLE_DEFAULT)
+        get() = getString(PREF_SITE_TITLE_FORMAT, PREF_SITE_TITLE_DEFAULT)!!
 
     private val SharedPreferences.isAdult
         get() = getBoolean(PREF_ADULT_KEY, PREF_ADULT_DEFAULT)
@@ -420,7 +420,7 @@ class Anikage :
         get() = getString(PREF_API_KEY, PREF_API_DEFAULT)!!
 
     private val SharedPreferences.subOrDub
-        get() = getString(PREF_ISSUBORDUB_SOURCE, PREF_ISSUBORDUB_DEFAULT)
+        get() = getString(PREF_ISSUBORDUB_SOURCE, PREF_ISSUBORDUB_DEFAULT)!!
 
     private val SharedPreferences.subSource
         get() = getString(PREF_SUB_SOURCE, PREF_SUB_DEFAULT)!!
@@ -437,27 +437,37 @@ class Anikage :
         private const val PREF_API_KEY = "private_api_key"
         private const val PREF_API_DEFAULT = "x9f2k7m4q1w8e3r6t5y0"
 
-        private val SUB_PROVIDER = arrayOf(
+        private val SUB_PROVIDER = listOf(
             "uwu",
+            "beep",
             "mochi",
+            "miku",
             "mimi",
-            "kami",
             "vee",
+            "kiwi",
+            "yuki",
+
+            "kami",
             "shiro",
             "wave",
             "zaza",
         )
-        private val DUB_PROVIDER = arrayOf(
-            "uwu",
+        private val DUB_PROVIDER = listOf(
             "mochi",
+            "miku",
+            "mimi",
+            "kiwi",
+            "yuki",
+
+            "uwu",
             "kami",
         )
 
         private const val PREF_SUB_SOURCE = "preferred_sub_source"
-        private val PREF_SUB_DEFAULT = SUB_PROVIDER.first()
+        private const val PREF_SUB_DEFAULT = "uwu"
 
         private const val PREF_DUB_SOURCE = "preferred_dub_source"
-        private val PREF_DUB_DEFAULT = DUB_PROVIDER.first()
+        private const val PREF_DUB_DEFAULT = "miku"
 
         private const val PREF_ISSUBORDUB_SOURCE = "is_sub_or_dub"
         private const val PREF_ISSUBORDUB_DEFAULT = "sub"
