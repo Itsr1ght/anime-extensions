@@ -15,9 +15,11 @@ import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.awaitSuccess
+import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import keiyoushi.utils.addEditTextPreference
 import keiyoushi.utils.addListPreference
 import keiyoushi.utils.addSwitchPreference
+import keiyoushi.utils.catchingFlatMap
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.toRequestBody
@@ -32,6 +34,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 class Anikage :
     AnimeHttpSource(),
@@ -44,6 +47,10 @@ class Anikage :
     override val supportsLatest: Boolean = true
 
     override val name: String = "Anikage"
+
+    override val client = network.client.newBuilder()
+        .rateLimit(5, 1L, TimeUnit.SECONDS)
+        .build()
 
     private val preferences by getPreferencesLazy()
 
@@ -195,20 +202,32 @@ class Anikage :
 
     // Video Links
 
-    override fun videoListRequest(episode: SEpisode): Request {
+    private fun videoListRequestUrl(episode: SEpisode, provider: String): String {
         val animeId = episode.url.substringAfterLast("/").substringBefore("?")
-
-        val provider = if (preferences.subOrDub == "dub") {
-            preferences.dubSource
-        } else {
-            preferences.subSource
-        }
 
         val token = makeSourcesToken(
             animeId.toIntOrNull()!!,
             episode.episode_number.toInt(),
             provider,
         )
+
+        return token.episodeUrlBuilder()
+    }
+
+    override suspend fun getVideoList(episode: SEpisode): List<Video> {
+        val providers = if (preferences.subOrDub == "dub") {
+            DUB_PROVIDER
+                .sortedBy { it.contains(preferences.dubSource) }
+                .associateBy { "Dub" } +
+                SUB_PROVIDER
+                    .sortedBy { it.contains(preferences.subSource) }
+                    .associateBy { "Sub" }
+        } else {
+            SUB_PROVIDER.sortedBy { it.contains(preferences.subSource) }
+                .associateBy { "Sub" } +
+                DUB_PROVIDER.sortedBy { it.contains(preferences.dubSource) }
+                    .associateBy { "Dub" }
+        }
 
         val getHeaders = headersBuilder()
             .add("Referer", episode.url)
@@ -219,34 +238,33 @@ class Anikage :
             .add("Sec-Fetch-Dest", "empty")
             .build()
 
-        return GET(token.episodeUrlBuilder(), headers = getHeaders)
-    }
-
-    override suspend fun getVideoList(episode: SEpisode): List<Video> {
-        val episodeData = client.newCall(videoListRequest(episode))
-            .awaitSuccess()
-            .parseAs<EpisodeSource>()
-
-        val getHeaders = headers.newBuilder().apply {
-            episodeData.headers.referer?.let { set("Referer", it) }
-            episodeData.headers.origin?.let { set("Origin", it) }
-            episodeData.headers.userAgent?.let { set("User-Agent", it) }
-        }.build()
-
-        val tracks = episodeData.subtitles.map {
-            Track(it.url, it.lang)
-        }
-
-        val videos = episodeData.sources.map {
-            Video(
-                url = it.url,
-                quality = it.quality,
-                videoUrl = it.url,
-                subtitleTracks = tracks,
-                headers = getHeaders,
+        return providers.toList().catchingFlatMap { (type, provider) ->
+            val episodeData = client.newCall(
+                GET(videoListRequestUrl(episode, provider), getHeaders),
             )
+                .awaitSuccess()
+                .parseAs<EpisodeSource>()
+
+            val providerHeaders = headers.newBuilder().apply {
+                episodeData.headers.referer?.let { set("Referer", it) }
+                episodeData.headers.origin?.let { set("Origin", it) }
+                episodeData.headers.userAgent?.let { set("User-Agent", it) }
+            }.build()
+
+            val tracks = episodeData.subtitles.map {
+                Track(it.url, it.lang)
+            }
+
+            episodeData.sources.map {
+                Video(
+                    url = it.url,
+                    quality = "$type - $provider - ${it.quality}",
+                    videoUrl = it.url,
+                    subtitleTracks = tracks,
+                    headers = providerHeaders,
+                )
+            }
         }
-        return videos
     }
 
     // Utils
