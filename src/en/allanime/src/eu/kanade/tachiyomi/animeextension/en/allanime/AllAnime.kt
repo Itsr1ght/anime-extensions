@@ -33,12 +33,11 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.jsoup.Jsoup
 import java.security.MessageDigest
@@ -61,6 +60,9 @@ class AllAnime :
     override val supportsLatest = true
 
     private val preferences by getPreferencesLazy()
+
+    override fun headersBuilder() = super.headersBuilder()
+        .set("Referer", "$baseUrl/")
 
     // ============================== Popular ===============================
 
@@ -251,7 +253,6 @@ class AllAnime :
                         put("translationType", subPref)
                         put("episodeString", ep)
                     }
-                    put("query", STREAMS_QUERY)
                 }.toJsonString()
             }
         }
@@ -260,22 +261,25 @@ class AllAnime :
     // ============================ Video Links =============================
 
     override fun videoListRequest(episode: SEpisode): Request {
-        val payload = episode.url
-            .toRequestBody("application/json; charset=utf-8".toMediaType())
+        val variables = episode.url.parseAs<JsonObject>()["variables"]!!.jsonObject
 
-        val postHeaders = headers.newBuilder().apply {
-            add("Accept", "*/*")
-            add("Content-Length", payload.contentLength().toString())
-            add("Content-Type", payload.contentType().toString())
-            add("Host", apiUrl.toHttpUrl().host)
-            add("Origin", GRAPHQL_ORIGIN)
-            add("Referer", "$GRAPHQL_ORIGIN/")
-        }.build()
+        val extensions = buildJsonObject {
+            putJsonObject("persistedQuery") {
+                put("version", 1)
+                put("sha256Hash", STREAM_HASH)
+            }
+        }
 
-        return POST("$apiUrl/api", headers = postHeaders, body = payload)
+        val url = apiUrl.toHttpUrl().newBuilder().apply {
+            addPathSegment("api")
+            addQueryParameter("variables", variables.toJsonString())
+            addQueryParameter("extensions", extensions.toJsonString())
+        }.build().toString()
+
+        return GET(url, headers)
     }
 
-    private val allAnimeExtractor by lazy { AllAnimeExtractor(client, headers, preferences.siteUrl) }
+    private val allAnimeExtractor by lazy { AllAnimeExtractor(client, headers) }
     private val gogoStreamExtractor by lazy { GogoStreamExtractor(client) }
     private val doodExtractor by lazy { DoodExtractor(client) }
     private val okruExtractor by lazy { OkruExtractor(client) }
@@ -295,13 +299,10 @@ class AllAnime :
 
         // 2. If encrypted, decrypt directly (errors surface to user); otherwise parse as plain text
         val sourceUrls = if (!tobeparsed.isNullOrBlank()) {
-            decryptTobeparsed(tobeparsed).parseAs<DecryptedEpisodeResult>().episode.sourceUrls
+            decryptTobeparsed(tobeparsed).parseAs<DecryptedEpisodeResult>().episode?.sourceUrls
         } else {
-            responseBody.parseAs<EpisodeResult>().data.episode.sourceUrls
-        }
-
-        val videoList = mutableListOf<Pair<Video, Float>>()
-        val serverList = mutableListOf<Server>()
+            responseBody.parseAs<EpisodeResult>().data.episode?.sourceUrls
+        } ?: emptyList()
 
         val hosterSelection = preferences.getHosters
         val altHosterSelection = preferences.getAltHosters
@@ -317,6 +318,7 @@ class AllAnime :
             "streamwish" to listOf("wish"),
         )
 
+        val serverList = mutableListOf<Server>()
         sourceUrls.forEach { video ->
             val videoUrl = video.sourceUrl.decryptSource()
 
@@ -328,81 +330,81 @@ class AllAnime :
                 videoUrl.startsWith("/apivtwo/") && INTERAL_HOSTER_NAMES.any {
                     Regex("""\b${it.lowercase()}\b""").find(video.sourceName.lowercase()) != null &&
                         hosterSelection.contains(it.lowercase())
-                } -> {
-                    serverList.add(Server(videoUrl, "internal ${video.sourceName}", video.priority))
-                }
+                } ->
+                    Server(videoUrl, "internal ${video.sourceName}", video.priority)
+                        .let(serverList::add)
 
-                altHosterSelection.contains("player") && video.type == "player" -> {
-                    serverList.add(Server(videoUrl, "player@${video.sourceName}", video.priority))
-                }
+                altHosterSelection.contains("player") && video.type == "player" ->
+                    Server(videoUrl, "player@${video.sourceName}", video.priority)
+                        .let(serverList::add)
 
-                matchingMapping != null -> {
-                    serverList.add(Server(videoUrl, matchingMapping.first, video.priority))
-                }
+                matchingMapping != null ->
+                    Server(videoUrl, matchingMapping.first, video.priority)
+                        .let(serverList::add)
             }
         }
 
-        videoList.addAll(
-            serverList.parallelCatchingFlatMap { server ->
-                val sName = server.sourceName
-                when {
-                    sName.startsWith("internal ") -> {
-                        allAnimeExtractor.videoFromUrl(server.sourceUrl, server.sourceName)
-                    }
+        // Fetch and cache the endpoint BEFORE the parallel processing
+        val iframeEndpoint = runCatching {
+            client.newCall(GET("${preferences.siteUrl}/getVersion")).awaitSuccess()
+                .parseAs<AllAnimeExtractor.VersionResponse>()
+                .episodeIframeHead
+        }.getOrDefault(FALLBACK_PLAYER_DOMAIN)
 
-                    sName.startsWith("player@") -> {
-                        val endPoint = client.newCall(GET("${preferences.siteUrl}/getVersion")).awaitSuccess()
-                            .parseAs<AllAnimeExtractor.VersionResponse>()
-                            .episodeIframeHead
+        return serverList.parallelCatchingFlatMap { server ->
+            val sName = server.sourceName
+            when {
+                sName.startsWith("internal ") -> {
+                    allAnimeExtractor.videoFromUrl(server.sourceUrl, server.sourceName, iframeEndpoint)
+                }
 
-                        val videoHeaders = headers.newBuilder().apply {
-                            add("Accept", "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5")
-                            add("Host", server.sourceUrl.toHttpUrl().host)
-                            add("Referer", "$endPoint/")
-                        }.build()
+                sName.startsWith("player@") -> {
+                    val videoHeaders = headers.newBuilder().apply {
+                        add("Accept", "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5")
+                        add("Host", server.sourceUrl.toHttpUrl().host)
+                        add("Referer", "$iframeEndpoint/")
+                    }.build()
 
-                        Video(
-                            server.sourceUrl,
-                            "Original (player ${server.sourceName.substringAfter("player@")})",
-                            server.sourceUrl,
-                            headers = videoHeaders,
-                        ).let(::listOf)
-                    }
+                    Video(
+                        server.sourceUrl,
+                        "Original (player ${server.sourceName.substringAfter("player@")})",
+                        server.sourceUrl,
+                        headers = videoHeaders,
+                    ).let(::listOf)
+                }
 
-                    sName == "vidstreaming" -> {
-                        gogoStreamExtractor.videosFromUrl(server.sourceUrl.replace(Regex("^//"), "https://"))
-                    }
+                sName == "vidstreaming" -> {
+                    gogoStreamExtractor.videosFromUrl(server.sourceUrl.replace(Regex("^//"), "https://"))
+                }
 
-                    sName == "dood" -> {
-                        doodExtractor.videosFromUrl(server.sourceUrl)
-                    }
+                sName == "dood" -> {
+                    doodExtractor.videosFromUrl(server.sourceUrl)
+                }
 
-                    sName == "okru" -> {
-                        okruExtractor.videosFromUrl(server.sourceUrl)
-                    }
+                sName == "okru" -> {
+                    okruExtractor.videosFromUrl(server.sourceUrl)
+                }
 
-                    sName == "mp4upload" -> {
-                        mp4uploadExtractor.videosFromUrl(server.sourceUrl, headers)
-                    }
+                sName == "mp4upload" -> {
+                    mp4uploadExtractor.videosFromUrl(server.sourceUrl, headers)
+                }
 
-                    sName == "streamlare" -> {
-                        streamlareExtractor.videosFromUrl(server.sourceUrl)
-                    }
+                sName == "streamlare" -> {
+                    streamlareExtractor.videosFromUrl(server.sourceUrl)
+                }
 
-                    sName == "filemoon" -> {
-                        filemoonExtractor.videosFromUrl(server.sourceUrl, prefix = "Filemoon:")
-                    }
+                sName == "filemoon" -> {
+                    filemoonExtractor.videosFromUrl(server.sourceUrl, prefix = "Filemoon:")
+                }
 
-                    sName == "streamwish" -> {
-                        streamwishExtractor.videosFromUrl(server.sourceUrl, videoNameGen = { "StreamWish:$it" })
-                    }
+                sName == "streamwish" -> {
+                    streamwishExtractor.videosFromUrl(server.sourceUrl, videoNameGen = { "StreamWish:$it" })
+                }
 
-                    else -> emptyList()
-                }.map { v -> Pair(v, server.priority) }
-            },
-        )
-
-        return prioritySort(videoList)
+                else -> emptyList()
+            }.map { v -> Pair(v, server.priority) }
+        }
+            .let(::prioritySort)
     }
 
     // ============================= Utilities ==============================
@@ -414,13 +416,25 @@ class AllAnime :
             startsWith("##") -> substring(2) to 1
             startsWith("-#") -> substring(2) to 4
             startsWith("#") -> substring(1) to 0
-            else -> return this
+            else -> this to null
         }
+
+        val parsedChunks = try {
+            hexPayload.chunked(2).map { it.toInt(16) }
+        } catch (_: NumberFormatException) {
+            return this // Fail fast and return the original string instead of a corrupted decryption
+        }
+
+        if (keyType == null) {
+            XOR_MASKS.forEach { mask ->
+                val decrypted = String(CharArray(parsedChunks.size) { i -> ((parsedChunks[i] xor mask) and 0xFF).toChar() })
+                if (decrypted.contains("/clock") || decrypted.contains("http")) return decrypted
+            }
+            return this
+        }
+
         val mask = XOR_MASKS[keyType]
-        return hexPayload.chunked(2)
-            .map { ((it.toInt(16)) xor mask) and 0xFF }
-            .map { it.toChar() }
-            .joinToString("")
+        return String(CharArray(parsedChunks.size) { i -> ((parsedChunks[i] xor mask) and 0xFF).toChar() })
     }
 
     private fun prioritySort(pList: List<Pair<Video, Float>>): List<Video> {
@@ -546,6 +560,8 @@ class AllAnime :
 
         private const val PREF_DOMAIN_KEY = "preferred_domain"
         private const val PREF_DOMAIN_DEFAULT = "https://api.allanime.day"
+
+        private const val FALLBACK_PLAYER_DOMAIN = "https://blog.allanime.day"
 
         private const val PREF_SERVER_KEY = "preferred_server"
         private val PREF_SERVER_ENTRIES = arrayOf("Site Default") +

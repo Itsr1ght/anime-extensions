@@ -22,7 +22,7 @@ import keiyoushi.utils.addSwitchPreference
 import keiyoushi.utils.catchingFlatMap
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import keiyoushi.utils.toRequestBody
+import keiyoushi.utils.toJsonRequestBody
 import keiyoushi.utils.useAsJsoup
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
@@ -362,7 +362,7 @@ class Anikage :
     }
 
     private fun buildPost(dataObject: JsonObject): Request {
-        val payload = dataObject.toRequestBody()
+        val payload = dataObject.toJsonRequestBody()
 
         val postHeaders = headers.newBuilder().apply {
             add("Accept", "*/*")
