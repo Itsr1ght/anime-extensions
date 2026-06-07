@@ -13,7 +13,7 @@ import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
 import keiyoushi.utils.addListPreference
 import keiyoushi.utils.addSwitchPreference
 import keiyoushi.utils.catchingFlatMap
@@ -26,7 +26,7 @@ import okhttp3.Request
 import okhttp3.Response
 import java.text.SimpleDateFormat
 import java.util.Locale
-import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.seconds
 
 class Anikage :
     AnimeHttpSource(),
@@ -41,7 +41,7 @@ class Anikage :
     override val name: String = "Anikage"
 
     override val client = network.client.newBuilder()
-        .rateLimit(5, 1L, TimeUnit.SECONDS)
+        .rateLimitHost(baseUrl.toHttpUrl(), 5, 1.seconds)
         .build()
 
     private val preferences by getPreferencesLazy()
