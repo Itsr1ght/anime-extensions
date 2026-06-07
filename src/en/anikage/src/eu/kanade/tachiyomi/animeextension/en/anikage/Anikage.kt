@@ -191,7 +191,6 @@ class Anikage :
                 url = animeEpisodeUrlFormat(
                     animeId,
                     it.number,
-                    it.number,
                 )
             }
         }
