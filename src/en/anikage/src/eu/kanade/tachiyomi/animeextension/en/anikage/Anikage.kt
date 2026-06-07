@@ -185,10 +185,9 @@ class Anikage :
                 } else {
                     "Episode ${it.number}"
                 }
-                date_upload = SimpleDateFormat(
-                    "yyyy-MM-dd",
-                    Locale.US,
-                ).parse(it.airDate)?.time ?: 0L
+                date_upload = runCatching {
+                    SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(it.airDate)?.time
+                }.getOrNull() ?: 0L
                 url = animeEpisodeUrlFormat(
                     animeId,
                     it.number,
@@ -256,7 +255,7 @@ class Anikage :
 
     private fun String.animeEpisodeBuilder(): String = "$baseUrl/api/media/anime/$this/episodes"
     private fun String.episodeSourceUrl(): String = "https://prox.anikage.cc/m3u8/$this"
-    private fun animeEpisodeUrlFormat(id: String, episodeId: Int, number: Int): String = "$baseUrl/api/media/anime/$id/episodes/$episodeId/sources"
+    private fun animeEpisodeUrlFormat(id: String, number: Int): String = "$baseUrl/api/media/anime/$id/episodes/$number/sources"
 
     private fun parseAnime(response: Response): AnimesPage {
         val jsonData = response.parseAs<AnikageResponse>()
@@ -275,7 +274,7 @@ class Anikage :
                 setUrlWithoutDomain("/anime/info/$id")
                 thumbnail_url = it.coverImage.extraLarge
                 title = titleName
-                description = it.title.english
+                description = null
                 status = when (it.status) {
                     "FINISHED" -> SAnime.COMPLETED
                     "RELEASING" -> SAnime.ONGOING
