@@ -211,15 +211,15 @@ class Anikage :
         val providers = if (preferences.subOrDub == "dub") {
             DUB_PROVIDER
                 .sortedBy { it.contains(preferences.dubSource) }
-                .associateBy { "Dub" } +
+                .map { "Dub" to it } +
                 SUB_PROVIDER
                     .sortedBy { it.contains(preferences.subSource) }
-                    .associateBy { "Sub" }
+                    .map { "Sub" to it }
         } else {
             SUB_PROVIDER.sortedBy { it.contains(preferences.subSource) }
-                .associateBy { "Sub" } +
+                .map { "Sub" to it } +
                 DUB_PROVIDER.sortedBy { it.contains(preferences.dubSource) }
-                    .associateBy { "Dub" }
+                    .map { "Dub" to it }
         }
 
         val playlistUtils = PlaylistUtils(client, headers)
