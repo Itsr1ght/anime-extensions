@@ -213,15 +213,15 @@ class Anikage :
     override suspend fun getVideoList(episode: SEpisode): List<Video> {
         val providers = if (preferences.subOrDub == "dub") {
             DUB_PROVIDER
-                .sortedBy { it.contains(preferences.dubSource) }
+                .sortedByDescending { it.contains(preferences.dubSource) }
                 .map { "Dub" to it } +
                 SUB_PROVIDER
-                    .sortedBy { it.contains(preferences.subSource) }
+                    .sortedByDescending { it.contains(preferences.subSource) }
                     .map { "Sub" to it }
         } else {
-            SUB_PROVIDER.sortedBy { it.contains(preferences.subSource) }
+            SUB_PROVIDER.sortedByDescending { it.contains(preferences.subSource) }
                 .map { "Sub" to it } +
-                DUB_PROVIDER.sortedBy { it.contains(preferences.dubSource) }
+                DUB_PROVIDER.sortedByDescending { it.contains(preferences.dubSource) }
                     .map { "Dub" to it }
         }
 
