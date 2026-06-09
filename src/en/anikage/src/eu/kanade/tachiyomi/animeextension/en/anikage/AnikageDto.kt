@@ -80,7 +80,14 @@ data class SourceData(
     val url: String,
     val quality: String,
     val isM3U8: Boolean?,
-)
+    val type: String?, // softsub,
+) {
+    fun episodeSourceUrl(): String = listOfNotNull(
+        "https://prox.anikage.cc",
+        isM3U8?.let { "m3u8" } ?: "stream",
+        url,
+    ).joinToString("/")
+}
 
 @Serializable
 data class SubtitleData(

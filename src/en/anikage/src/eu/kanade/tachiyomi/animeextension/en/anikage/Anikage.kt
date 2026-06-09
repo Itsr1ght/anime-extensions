@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.animeextension.en.anikage
 
 import android.content.SharedPreferences
 import androidx.preference.PreferenceScreen
+import aniyomi.lib.playlistutils.PlaylistUtils
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimeUpdateStrategy
@@ -225,6 +226,8 @@ class Anikage :
             .add("Sec-Fetch-Dest", "empty")
             .build()
 
+        val playlistUtils = PlaylistUtils(client, headers)
+
         return providers.toList().parallelCatchingFlatMap { (type, provider) ->
             val episodeData = client.newCall(
                 GET(videoListRequestUrl(episode, provider), getHeaders),
@@ -236,14 +239,25 @@ class Anikage :
                 Track(it.file, it.label)
             }
 
-            episodeData.sources.map {
-                Video(
-                    url = it.url.episodeSourceUrl(),
-                    quality = "$type - $provider - ${it.quality}",
-                    videoUrl = it.url.episodeSourceUrl(),
-                    subtitleTracks = tracks,
-                    headers = headers,
-                )
+            episodeData.sources.parallelCatchingFlatMap { source ->
+                val videoUrl = source.episodeSourceUrl()
+                if (source.isM3U8 == true) {
+                    playlistUtils.extractFromHls(
+                        playlistUrl = videoUrl,
+                        masterHeaders = headers,
+                        videoHeaders = headers,
+                        videoNameGen = { "$type - $provider - ${source.quality} - $it" },
+                        subtitleList = tracks,
+                    )
+                } else {
+                    Video(
+                        url = videoUrl,
+                        quality = "$type - $provider - ${source.quality}",
+                        videoUrl = videoUrl,
+                        subtitleTracks = tracks,
+                        headers = headers,
+                    ).let(::listOf)
+                }
             }
         }
     }
@@ -251,7 +265,6 @@ class Anikage :
     // Utils
 
     private fun String.animeEpisodeBuilder(): String = "$baseUrl/api/media/anime/$this/episodes"
-    private fun String.episodeSourceUrl(): String = "https://prox.anikage.cc/m3u8/$this"
     private fun animeEpisodeUrlFormat(id: String, number: Int): String = "$baseUrl/api/media/anime/$id/episodes/$number/sources"
 
     private fun parseAnime(response: Response): AnimesPage {
