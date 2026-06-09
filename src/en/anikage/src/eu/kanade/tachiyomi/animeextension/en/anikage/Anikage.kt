@@ -157,7 +157,7 @@ class Anikage :
     override fun episodeListParse(response: Response) = throw UnsupportedOperationException()
 
     override fun episodeListRequest(anime: SAnime): Request {
-        val animeId = anime.url.split("/").last()
+        val animeId = anime.url.removeSuffix("/").substringAfterLast("/")
         val getHeaders = headersBuilder()
             .add("Referer", "$baseUrl${anime.url}")
             .add("Origin", baseUrl)
