@@ -299,10 +299,10 @@ class Anikage :
 
     private fun buildGet(url: HttpUrl): Request {
         val postHeaders = headers.newBuilder().apply {
-            add("Accept", "*/*")
-            add("Host", ANIKAGE_API_URL.host)
-            add("Origin", baseUrl)
-            add("Referer", "$ANIKAGE_API/")
+            set("Accept", "*/*")
+            set("Host", ANIKAGE_API_URL.host)
+            set("Origin", baseUrl)
+            set("Referer", "$ANIKAGE_API/")
         }.build()
 
         return GET(url, headers = postHeaders)
