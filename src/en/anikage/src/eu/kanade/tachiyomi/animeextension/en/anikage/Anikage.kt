@@ -359,7 +359,11 @@ class Anikage :
         get() = getString(PREF_DUB_SOURCE, PREF_DUB_DEFAULT)!!
 
     companion object {
-        private val DATE_FORMAT by lazy { SimpleDateFormat("yyyy-MM-dd", Locale.US) }
+        private val DATE_FORMAT by lazy {
+            object : ThreadLocal<SimpleDateFormat>() {
+                override fun initialValue() = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+            }
+        }
 
         private const val ANIKAGE_API = "https://anikage.cc/api/media/anime/advanced-search"
         private val ANIKAGE_API_URL by lazy { ANIKAGE_API.toHttpUrl() }
