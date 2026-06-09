@@ -232,7 +232,7 @@ class Anikage :
                 .awaitSuccess()
                 .parseAs<EpisodeSource>()
 
-            val providerHeaders = headers.newBuilder().build()
+            val providerHeaders = headers
 
             val tracks = episodeData.subtitles.map {
                 Track(it.file, it.label)
