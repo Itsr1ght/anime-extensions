@@ -171,7 +171,7 @@ class Anikage :
     }
 
     override suspend fun getEpisodeList(anime: SAnime): List<SEpisode> {
-        val animeId = anime.url.split("/").last()
+        val animeId = anime.url.removeSuffix("/").substringAfterLast("/")
 
         val episodesData = client.newCall(episodeListRequest(anime))
             .awaitSuccess()
