@@ -51,7 +51,7 @@ class Anikage :
     override fun getFilterList(): AnimeFilterList = AnikageFilters.FILTER_LIST
 
     override fun popularAnimeRequest(page: Int): Request {
-        val requestUrl = ANIKAGE_API.toHttpUrl()
+        val requestUrl = ANIKAGE_API_URL
             .newBuilder()
         requestUrl.addQueryParameter("page", page.toString())
         requestUrl.addQueryParameter("sort", "popularity")
@@ -71,7 +71,7 @@ class Anikage :
         filters: AnimeFilterList,
     ): Request {
         val searchParams = AnikageFilters.getSearchParameters(filters)
-        val requestUrl = ANIKAGE_API.toHttpUrl()
+        val requestUrl = ANIKAGE_API_URL
             .newBuilder()
         requestUrl.addQueryParameter("page", page.toString())
         requestUrl.addQueryParameter("per_page", 25.toString())
@@ -104,7 +104,7 @@ class Anikage :
     override fun searchAnimeParse(response: Response): AnimesPage = parseAnime(response)
 
     override fun latestUpdatesRequest(page: Int): Request {
-        val requestUrl = ANIKAGE_API.toHttpUrl()
+        val requestUrl = ANIKAGE_API_URL
             .newBuilder()
         requestUrl.addQueryParameter("page", page.toString())
         requestUrl.addQueryParameter("sort", "updated")
@@ -185,7 +185,7 @@ class Anikage :
                 } else {
                     "Episode ${it.number}"
                 }
-                date_upload = DATE_FORMAT.get()!!.tryParse(it.airDate)
+                date_upload = DATE_FORMAT.tryParse(it.airDate)
                 setUrlWithoutDomain(
                     animeEpisodeUrlFormat(
                         animeId,
@@ -232,8 +232,6 @@ class Anikage :
                 .awaitSuccess()
                 .parseAs<EpisodeSource>()
 
-            val providerHeaders = headers
-
             val tracks = episodeData.subtitles.map {
                 Track(it.file, it.label)
             }
@@ -244,7 +242,7 @@ class Anikage :
                     quality = "$type - $provider - ${it.quality}",
                     videoUrl = it.url.episodeSourceUrl(),
                     subtitleTracks = tracks,
-                    headers = providerHeaders,
+                    headers = headers,
                 )
             }
         }
@@ -290,7 +288,7 @@ class Anikage :
     private fun buildGet(url: HttpUrl): Request {
         val postHeaders = headers.newBuilder().apply {
             add("Accept", "*/*")
-            add("Host", ANIKAGE_API.toHttpUrl().host)
+            add("Host", ANIKAGE_API_URL.host)
             add("Origin", baseUrl)
             add("Referer", "$ANIKAGE_API/")
         }.build()
@@ -359,11 +357,7 @@ class Anikage :
         get() = getString(PREF_DUB_SOURCE, PREF_DUB_DEFAULT)!!
 
     companion object {
-        private val DATE_FORMAT by lazy {
-            object : ThreadLocal<SimpleDateFormat>() {
-                override fun initialValue() = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-            }
-        }
+        private val DATE_FORMAT by lazy { SimpleDateFormat("yyyy-MM-dd", Locale.US) }
 
         private const val ANIKAGE_API = "https://anikage.cc/api/media/anime/advanced-search"
         private val ANIKAGE_API_URL by lazy { ANIKAGE_API.toHttpUrl() }
