@@ -22,6 +22,7 @@ import keiyoushi.utils.parallelCatchingFlatMap
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.tryParse
 import keiyoushi.utils.useAsJsoup
+import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
@@ -42,6 +43,10 @@ class Anikage :
     override val supportsRelatedAnimes = false
 
     override val name: String = "Anikage"
+
+    override fun headersBuilder(): Headers.Builder = super.headersBuilder()
+        .set("Origin", baseUrl)
+        .set("Referer", "$baseUrl/")
 
     override val client = network.client.newBuilder()
         .rateLimitHost(baseUrl.toHttpUrl(), 5, 1.seconds)
@@ -217,20 +222,11 @@ class Anikage :
                     .associateBy { "Dub" }
         }
 
-        val getHeaders = headersBuilder()
-            .add("Referer", "$baseUrl${episode.url}")
-            .add("Origin", baseUrl)
-            .add("Accept", "*/*")
-            .add("Sec-Fetch-Site", "same-origin")
-            .add("Sec-Fetch-Mode", "cors")
-            .add("Sec-Fetch-Dest", "empty")
-            .build()
-
         val playlistUtils = PlaylistUtils(client, headers)
 
         return providers.toList().parallelCatchingFlatMap { (type, provider) ->
             val episodeData = client.newCall(
-                GET(videoListRequestUrl(episode, provider), getHeaders),
+                GET(videoListRequestUrl(episode, provider), headers),
             )
                 .awaitSuccess()
                 .parseAs<EpisodeSource>()
